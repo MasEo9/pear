@@ -1,0 +1,56 @@
+# Compiled object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Precompiled headers
+*.gch
+*.pch
+
+# Compiled libraries
+*.a
+*.lib
+*.la
+*.lo
+*.so
+*.dylib
+*.dll
+
+# Executables and shared objects
+*.out
+*.app
+*.exe
+*.bin
+
+# Debugging and profiling
+*.dwo
+*.gcno
+*.gcda
+*.su
+*.symtypes
+
+# Linux kernel specific (if applicable)
+Module.symvers
+modules.order
+builtin.order
+dtbs-list
+
+# Editors and IDEs
+*~
+# VS Code
+.vscode/
+# Vim swap/backup files
+*.swp
+*.swo
+*.bak
+.netrwhist
+
+# Operating System generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
