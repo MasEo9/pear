@@ -2,6 +2,8 @@ local M = {}
 
 M.job_id = nil
 
+local state = require("pear.state")
+
 local function log_debug(msg)
     -- Open the log file in append mode
     local f = io.open("/tmp/pear_rpc.log", "a")
@@ -16,21 +18,30 @@ end
 
 local function handle_rpc_event(parsed)
     local ui = require("pear.ui")
+    local state = require("pear.state")
     
     log_debug("RPC Event: " .. vim.json.encode(parsed))
 
-    if parsed.type == "run_start" or parsed.type == "message_start" then
-        ui.start_loading()
-    elseif parsed.type == "message_delta" or (parsed.assistantMessageEvent and parsed.assistantMessageEvent.type == "text_delta") then
-        ui.stop_loading()
-        local text = (parsed.delta and parsed.delta.text) or (parsed.assistantMessageEvent and parsed.assistantMessageEvent.delta)
-        -- Only stream text if it's not a tool output or verbose code block
-        if text and not text:match("```") then
-            ui.append_text(text)
+    if parsed.type == "response" then
+        -- This is just the RPC acknowledgment that the prompt was queued.
+        -- Do nothing here, wait for run_start or message_start to actually indicate progress.
+    elseif parsed.type == "run_start" then
+        state.set_thinking()
+    elseif parsed.type == "message_start" and parsed.message.role == "assistant" then
+        state.set_thinking()
+    elseif parsed.type == "message_update" and parsed.assistantMessageEvent then
+        if parsed.assistantMessageEvent.type == "thinking_start" or parsed.assistantMessageEvent.type == "text_start" then
+            state.set_thinking()
+        elseif parsed.assistantMessageEvent.type == "text_delta" then
+            state.set_writing()
+            local text = parsed.assistantMessageEvent.delta
+            if text and not text:match("```") then
+                ui.append_text(text)
+            end
         end
     elseif parsed.type == "tool_execution_start" or parsed.type == "tool_call_start" then
-        ui.stop_loading()
         local name = parsed.toolName or (parsed.tool_call and parsed.tool_call.name) or "unknown"
+        state.set_tool_execution(name)
         ui.append_lines({ "", "[Executing Tool: " .. name .. "]" })
         
         -- Handle edit tools by intercepting them and showing suggestions
@@ -56,10 +67,10 @@ local function handle_rpc_event(parsed)
             end
         end
     elseif parsed.type == "tool_execution_end" or parsed.type == "tool_call_result" then
-        ui.stop_loading()
+        state.set_thinking()
         ui.append_lines({ "[Tool Finished]" })
-    elseif parsed.type == "response" or parsed.type == "turn_end" then
-        ui.stop_loading()
+    elseif parsed.type == "turn_end" or parsed.type == "agent_end" or parsed.type == "agent_settled" then
+        state.set_idle()
         ui.append_lines({ "", "[Done]" })
     end
 end
@@ -150,16 +161,13 @@ function M.start(config)
     end
 end
 
+--- Stop the Pear RPC process
 function M.stop()
-    -- Check if there is an active job ID
     if M.job_id then
-        -- Stop the background job using its ID
         vim.fn.jobstop(M.job_id)
-        -- Clear the stored job ID
         M.job_id = nil
         print("Pear RPC stopped.")
     else
-        -- Inform the user if no job is currently running
         print("Pear RPC is not running.")
     end
 end

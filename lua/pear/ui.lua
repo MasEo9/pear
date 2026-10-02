@@ -12,6 +12,26 @@ M.target_bufnr = nil
 M.target_row = nil
 M.spinner_extmark = nil
 
+local state = require("pear.state")
+
+--- Initialize the UI module and subscribe to state changes
+function M.init()
+    state.subscribe("ui_spinner", function(current_state)
+        -- Map the state machine to UI spinner behavior
+        if current_state.status == "idle" or current_state.status == "done" or current_state.status == "error" then
+            M.stop_loading()
+        elseif current_state.status == "initializing" then
+            M.start_loading("Pear agent initializing...")
+        elseif current_state.status == "thinking" then
+            M.start_loading("Pear agent thinking...")
+        elseif current_state.status == "writing" then
+            M.start_loading("Agent writing response...")
+        elseif current_state.status == "tool_execution" then
+            M.start_loading("Executing tool: " .. (current_state.tool_name or "unknown") .. "...")
+        end
+    end)
+end
+
 --- Set the context for where the inline spinner should appear
 function M.set_context(bufnr, row)
     M.target_bufnr = bufnr
@@ -29,6 +49,36 @@ function M.ensure_buffer()
     end
 end
 
+--- Create a floating status window near the top right
+local function create_status_win()
+    if M.status_win and vim.api.nvim_win_is_valid(M.status_win) then
+        return
+    end
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].buftype = "nofile"
+    vim.bo[buf].bufhidden = "wipe"
+
+    -- Calculate top right corner
+    local width = 45
+    local height = 1
+    local col = vim.o.columns - width - 2
+    local row = 1
+
+    M.status_win = vim.api.nvim_open_win(buf, false, {
+        relative = 'editor',
+        row = row,
+        col = col,
+        width = width,
+        height = height,
+        style = 'minimal',
+        border = 'rounded',
+        title = ' Pear Status ',
+        title_pos = 'center',
+    })
+    M.status_buf = buf
+end
+
 --- Stop the loading spinner
 function M.stop_loading()
     M.is_loading = false
@@ -40,14 +90,52 @@ function M.stop_loading()
         M.spinner_timer = nil
     end
     
-    -- Remove the inline spinner extmark
-    if M.spinner_extmark and M.target_bufnr and vim.api.nvim_buf_is_valid(M.target_bufnr) then
-        vim.api.nvim_buf_del_extmark(M.target_bufnr, spinner_ns, M.spinner_extmark)
-        M.spinner_extmark = nil
+    -- Close the status window if it exists
+    if M.status_win and vim.api.nvim_win_is_valid(M.status_win) then
+        vim.api.nvim_win_close(M.status_win, true)
+        M.status_win = nil
+        M.status_buf = nil
     end
 end
 
---- Open a small floating window near the cursor to get the user's instruction
+--- Update the message of the loading spinner
+function M.update_loading(msg)
+    if msg then
+        M.loading_msg = msg
+    end
+end
+
+--- Start a loading spinner in a floating status window
+function M.start_loading(msg)
+    local was_loading = M.is_loading
+    M.is_loading = true
+    M.loading_msg = msg or "Pear agent thinking..."
+    
+    create_status_win()
+    
+    if not M.status_buf or not vim.api.nvim_buf_is_valid(M.status_buf) then return end
+    
+    -- Immediately draw the frame so it updates instantly
+    local frame = M.spinner_frames[M.spinner_idx]
+    vim.api.nvim_buf_set_lines(M.status_buf, 0, -1, false, { " " .. frame .. " " .. M.loading_msg })
+
+    -- Only start a new timer if we weren't already spinning
+    if not was_loading then
+        M.spinner_timer = vim.loop.new_timer()
+        M.spinner_timer:start(100, 100, vim.schedule_wrap(function()
+            if not M.is_loading or not M.status_buf or not vim.api.nvim_buf_is_valid(M.status_buf) then
+                M.stop_loading()
+                return
+            end
+            
+            M.spinner_idx = (M.spinner_idx % #M.spinner_frames) + 1
+            local curr_frame = M.spinner_frames[M.spinner_idx]
+            
+            vim.api.nvim_buf_set_lines(M.status_buf, 0, -1, false, { " " .. curr_frame .. " " .. M.loading_msg })
+        end))
+    end
+end
+--- Open a small floating window
 function M.prompt_user(callback)
     local buf = vim.api.nvim_create_buf(false, true)
     vim.bo[buf].buftype = "nofile"
@@ -92,27 +180,39 @@ function M.prompt_user(callback)
         vim.cmd("startinsert")
     end)
 
-    local function cleanup()
+    local function submit()
+        local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+        local text = lines[1] or ""
+        
+        -- We must close the window BEFORE scheduling the callback,
+        -- otherwise Neovim blocks screen redraws while the float is in focus
         vim.cmd("stopinsert")
         if vim.api.nvim_win_is_valid(win) then
             vim.api.nvim_win_close(win, true)
         end
-        -- Clear the temporary visual highlight
         if vim.api.nvim_buf_is_valid(current_buf) then
             vim.api.nvim_buf_clear_namespace(current_buf, hl_ns, 0, -1)
         end
-    end
-
-    local function submit()
-        local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-        local text = lines[1] or ""
-        cleanup()
-        callback(text)
+        
+        -- Force a UI flush before yielding to the callback where the jobstart happens
+        vim.cmd("redraw")
+        
+        vim.schedule(function()
+            callback(text)
+        end)
     end
 
     local function cancel()
-        cleanup()
-        callback(nil)
+        vim.cmd("stopinsert")
+        if vim.api.nvim_win_is_valid(win) then
+            vim.api.nvim_win_close(win, true)
+        end
+        if vim.api.nvim_buf_is_valid(current_buf) then
+            vim.api.nvim_buf_clear_namespace(current_buf, hl_ns, 0, -1)
+        end
+        vim.schedule(function()
+            callback(nil)
+        end)
     end
 
     -- Map Enter to submit in both insert and normal mode
@@ -120,34 +220,6 @@ function M.prompt_user(callback)
     -- Map Escape to cancel
     vim.keymap.set('n', '<Esc>', cancel, { buffer = buf, noremap = true, silent = true })
     vim.keymap.set('n', 'q', cancel, { buffer = buf, noremap = true, silent = true })
-end
-
---- Start a loading spinner inline above the selected text
-function M.start_loading()
-    if M.is_loading then return end
-    M.is_loading = true
-    
-    if not M.target_bufnr or not vim.api.nvim_buf_is_valid(M.target_bufnr) then return end
-
-    M.spinner_timer = vim.loop.new_timer()
-    M.spinner_timer:start(0, 100, vim.schedule_wrap(function()
-        if not M.is_loading or not vim.api.nvim_buf_is_valid(M.target_bufnr) then
-            M.stop_loading()
-            return
-        end
-        
-        M.spinner_idx = (M.spinner_idx % #M.spinner_frames) + 1
-        local frame = M.spinner_frames[M.spinner_idx]
-        
-        if M.spinner_extmark then
-            vim.api.nvim_buf_del_extmark(M.target_bufnr, spinner_ns, M.spinner_extmark)
-        end
-        
-        M.spinner_extmark = vim.api.nvim_buf_set_extmark(M.target_bufnr, spinner_ns, M.target_row, 0, {
-            virt_lines = { { { frame .. " Pear agent thinking...", "WarningMsg" } } },
-            virt_lines_above = true,
-        })
-    end))
 end
 
 --- Set up keymaps for the sidebar buffer

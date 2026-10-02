@@ -52,18 +52,25 @@ We moved to an inline acceptance model.
 - Drastically improved UX and speed.
 - Requires precise matching logic to locate `oldText` inside the buffer, including fallback logic if indentation doesn't match perfectly.
 
-## 5. UI Feedback: Inline Spinners & Floating Prompts
+## 6. Hybrid Workflow: Agent vs. Copilot (The "Pair Programmer" Philosophy)
 **Status:** Accepted
 
 **Context:**
-The original design forced a sidebar open every time a prompt was submitted, which was intrusive. Furthermore, users lacked clear visual feedback on what code was selected during prompt entry.
+We discovered a friction point between task scope and latency. Using a full agent harness (`pi`) for minor, surgical edits (like adding a docstring) incurred an unacceptable 10-20 second "Agent Tax" (reasoning tokens + tool dispatch). However, removing `pi` entirely would destroy the plugin's ability to act as a true pair programmer that can autonomously gather context across the workspace.
 
 **Decision:**
-- **Floating Input:** Replaced `vim.ui.input` with a custom floating window positioned at the cursor (`ui.prompt_user`).
-- **Visual Retention:** While the float is open, the visual selection is manually re-highlighted using an `extmark` namespace so the user remembers what code they are modifying.
-- **Inline Loading:** Removed the auto-opening sidebar. Replaced it with an asynchronous animated spinner (`⠋ Pear agent thinking...`) rendered as virtual text immediately above the selected code block.
-- **Hidden Logs:** The sidebar is now strictly a hidden log buffer, accessible only via `:PearSidebar` when a user wishes to debug or read verbose LLM chat output.
+`PEAR` will embrace a dual-mode workflow to support both architectural implementation and surgical refinement:
+1.  **Agent Mode (The Architect):** Driven by the `pi` RPC process. Best used for translating pseudocode/comments into implementations where the agent must autonomously read other files (e.g., schemas, utils) to gather context before writing. 
+2.  **Copilot Mode (The Surgeon):** *[Pending Implementation]* A fast, direct API client for sub-second, inline transformations (e.g., "format this", "add comments") that only require the immediate visual selection context.
 
-**Consequences:**
-- The plugin feels highly integrated, premium, and non-intrusive.
-- The user's focus never leaves their active code buffer during the entire prompt-to-edit lifecycle.
+## 7. Ghost Text & Code Review UX
+**Status:** Proposed
+
+**Context:**
+The current ghost text implementation uses the `Comment` highlight group (gray text) to differentiate suggested code from real code. However, reading un-highlighted gray text makes code review difficult, defeating the purpose of the approval queue.
+
+**Decision:**
+We will revamp the suggestion UI:
+- We will retain native syntax highlighting for suggested code.
+- To differentiate suggestions from real code, we will utilize background colors (e.g., a subtle green/blue diff background, similar to `DiffAdd` or GitHub PRs) and a virtual text gutter sign (`+`).
+- This allows the user to review the code with full syntax comprehension while clearly seeing that it is a pending addition.
